@@ -122,6 +122,10 @@ export async function summarize(
   return text;
 }
 
+export function isReconciliationQuery(query: string): boolean {
+  return /\b(reconcil|close|closing|cleanup|clean up|stale|retire|audit.*tasks|which tasks to close)\b/i.test(query);
+}
+
 /**
  * Builds rich, multi-source context for Chief of Staff intelligence:
  * notes, activities, authoritative Next Steps, Docs links, Support Cases, and Vector CRM pipeline.
@@ -131,13 +135,30 @@ export async function buildChiefOfStaffContext(
   e: EntityRecord | null,
   all: Map<string, EntityRecord>,
   win: Window,
-  charBudget = 70_000,
+  charBudget = 75_000,
 ): Promise<string> {
+  const minLookback = daysAgoIso(120);
   if (!e) {
-    return buildPortfolioContext(win, all, charBudget);
+    const effectivePortfolioWin: Window = {
+      from: win.from && win.from < minLookback ? win.from : minLookback,
+      to: win.to || todayIso(),
+    };
+    return buildPortfolioContext(effectivePortfolioWin, all, charBudget);
   }
 
-  const parts: string[] = [buildContext(e, win, all, 35_000)];
+  // Expand note lookback to cover at least 120 days or earliest open task so resolution notes are never missed
+  const open = openTasks(e);
+  const earliestOpenDate = open.reduce(
+    (min, t) => (t.noteDate && (!min || t.noteDate < min) ? t.noteDate : min),
+    '',
+  );
+  const targetFrom = earliestOpenDate && earliestOpenDate < minLookback ? earliestOpenDate : minLookback;
+  const effectiveWin: Window = {
+    from: win.from && win.from < targetFrom ? win.from : targetFrom,
+    to: win.to || todayIso(),
+  };
+
+  const parts: string[] = [buildContext(e, effectiveWin, all, 48_000)];
 
   // Read authoritative Entity note (Customers/<Name>.md, Projects/<Name>.md) if notePath exists
   if (e.notePath) {
@@ -213,11 +234,77 @@ export async function askChiefOfStaff(
     throw new Error('Please configure a Gemini API key in Cockpit settings for Chief of Staff AI actions.');
   }
 
-  const context = await buildChiefOfStaffContext(app, currentEntity, allEntities, win);
+  const isReconcile = isReconciliationQuery(query);
+  const context = await buildChiefOfStaffContext(app, currentEntity, allEntities, win, isReconcile ? 90_000 : 75_000);
   const today = todayIso();
   const entityScope = currentEntity ? `${currentEntity.type} / ${currentEntity.name}` : 'Entire Portfolio';
 
-  const systemInstruction = `You are the Executive Chief of Staff to a Principal Google Cloud Healthcare & Life Sciences (HCLS) Customer Engineer.
+  const systemInstruction = isReconcile
+    ? `You are the Executive Chief of Staff performing an EXHAUSTIVE SINGLE-PASS TASK RECONCILIATION & BACKLOG AUDIT for a Google Cloud HCLS Customer Engineer.
+Current Scope: ${entityScope}
+Today's Date: ${today}
+User Directive: "${query}"
+
+CRITICAL SINGLE-PASS RECONCILIATION RULES:
+1. EXHAUSTIVE SINGLE-PASS REQUIREMENT (ZERO LEFTOVERS):
+   - You MUST evaluate 100% of the open tasks listed under "## Open tasks" in a SINGLE pass. Do NOT stop at 5 or 10 tasks.
+   - Every single open task in the context MUST be accounted for: either place it in "taskUpdates" (to close as "done" or "cancelled") OR place it in "keptOpenTasks" (if genuinely still active/needed).
+2. STRICT 1-SENTENCE JUSTIFICATION RULE (<= 1 SENTENCE, MAX 16 WORDS):
+   - Every "reason" field MUST be 1 punchy sentence or less (maximum 16 words) starting with concrete evidence or staleness facts.
+   - Examples of great "done" reasons:
+     * "Delivered sizing proposal in [[2026-09-12]] architecture sync note."
+     * "Resolved in [[2026-09-14]] meeting; David confirmed quota applied."
+   - Examples of great "cancelled" reasons:
+     * "Superseded by [[2026-09-15]] decision to pivot from FoldRun to BigQuery."
+     * "Duplicate of active open task on line 18."
+     * "Stale (noted 2026-06-10, >90d old) with zero follow-up in recent notes."
+   - Examples of great "keptOpenTasks" reasons:
+     * "Active P0 deliverable due 2026-09-20; discussed in [[2026-09-15]] sync."
+3. EXACT FILE & LINE METADATA:
+   - Copy the exact "path" and "line" integer from the [path="..." line=...] prefix on each open task.
+4. Output ONLY valid JSON matching this schema:
+
+{
+  "situationBrief": "Concise 1-paragraph executive summary of the reconciliation sweep (e.g., evaluated N open tasks: proposing X done, Y cancelled/stale, and keeping Z active commitments).",
+  "diagnosticReview": {
+    "healthStatus": "healthy" | "caution" | "neutral",
+    "headline": "1-sentence summary of backlog hygiene after reconciliation",
+    "findings": [
+      "Count and breakdown of completed vs stale/superseded tasks identified",
+      "Summary of remaining active commitments"
+    ],
+    "blindSpots": []
+  },
+  "actionProposals": [
+    {
+      "type": "reconcile_tasks",
+      "title": "Exhaustive Task Reconciliation Sweep",
+      "description": "Single-pass audit of all open tasks against meeting notes, completions, and staleness",
+      "taskUpdates": [
+        {
+          "path": "Customers/Acme.md",
+          "line": 42,
+          "currentText": "Finalize production sizing proposal",
+          "newStatus": "done",
+          "reason": "Delivered sizing proposal in [[2026-09-12]] architecture sync note.",
+          "entityName": "Acme"
+        }
+      ],
+      "keptOpenTasks": [
+        {
+          "path": "Customers/Acme.md",
+          "line": 55,
+          "currentText": "Review security posture with CISO",
+          "reason": "Active P1 commitment scheduled for next week per [[2026-09-15]] note.",
+          "entityName": "Acme"
+        }
+      ]
+    }
+  ]
+}
+
+Return ONLY raw valid JSON, no markdown codeblocks, no commentary.`
+    : `You are the Executive Chief of Staff to a Principal Google Cloud Healthcare & Life Sciences (HCLS) Customer Engineer.
 Your mandate is high-agency strategic partnership: diagnose account health, uncover friction points and blockers, reconcile open tasks against note context, and prepare turnkey execution artifacts (task closures, emails, meeting invites, Vector CRM fixes, prioritized tasks, next steps).
 
 Current Scope: ${entityScope}
@@ -229,12 +316,9 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
 1. Rely EXCLUSIVELY and STRICTLY on the facts, stakeholders, support tickets, and telemetry in the GROUND TRUTH CONTEXT. Do NOT invent fictional companies or cases.
 2. TASK RECONCILIATION & CLOSURE (HIGH PRIORITY):
    - Carefully cross-reference all items under "## Open tasks" against "## Completed in the window", "## Notes, newest first", "## Authoritative Next Step", and support/CRM telemetry.
-   - Whenever the user asks to reconcile, review, clean up, audit, or propose which open tasks to close (or whenever open tasks in context have clearly been delivered, completed, superseded, or rendered obsolete by subsequent notes), you MUST include a "reconcile_tasks" proposal in "actionProposals".
-   - For each open task that should be closed:
-     * Set "newStatus" to "done" (✅) if recent notes, meeting summaries, or completions confirm the commitment/deliverable was completed, sent, answered, or resolved.
-     * Set "newStatus" to "cancelled" (❌) if the task was superseded by a newer architectural decision or Next Step, abandoned, duplicate of another task, or stale (>30 days old with zero mention in recent notes and no active blocker).
-     * Provide a specific, grounded "reason" citing the exact note date, heading, or rationale from the context.
-     * Copy the exact "path" and "line" number from the [path="..." line=...] tag on that open task line, and set "currentText" to the task text.
+   - Whenever open tasks in context have clearly been delivered, completed, superseded, or rendered obsolete by subsequent notes, include a "reconcile_tasks" proposal in "actionProposals".
+   - STRICT 1-SENTENCE JUSTIFICATION: Every "reason" MUST be 1 punchy sentence or less (max 16 words) citing the specific note date/heading or staleness fact (e.g., "Delivered sizing deck in [[2026-09-12]] sync note." or "Stale since 2026-06-10 (>90d) with no recent mention.").
+   - Copy the exact "path" and "line" number from the [path="..." line=...] tag on that open task line, and set "currentText" to the task text.
 3. TASK AWARENESS & DEDUPLICATION:
    - NEVER propose a new task ("add_task") that duplicates, restates, or overlaps an existing open task.
    - If an existing task is genuinely still active and overdue/blocked (e.g., #waiting), prioritize proposing concrete interventions (an email draft, meeting invite, or Vector CRM fix) to UNBLOCK that commitment.
@@ -254,7 +338,6 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
     ]
   },
   "actionProposals": [
-    // Task Reconciliation Proposal (include whenever open tasks should be marked done or cancelled based on note context):
     {
       "type": "reconcile_tasks",
       "title": "Reconcile Open Tasks: Propose Closures",
@@ -265,12 +348,11 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
           "line": 42,
           "currentText": "Finalize production sizing proposal",
           "newStatus": "done",
-          "reason": "Confirmed delivered in 2026-09-12 architecture sync note",
+          "reason": "Delivered sizing proposal in [[2026-09-12]] architecture sync note.",
           "entityName": "Acme"
         }
       ]
     },
-    // Email draft if outreach, reply, or status update is needed:
     {
       "type": "email_draft",
       "title": "Email: [Follow-up Subject]",
@@ -282,7 +364,6 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
         "rationale": "Strategic objective of this email"
       }
     },
-    // Meeting proposal if alignment or triage is needed:
     {
       "type": "schedule_meeting",
       "title": "Meeting: [Duration] [Topic] with [Attendees]",
@@ -295,7 +376,6 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
         "rationale": "Direct alignment needed"
       }
     },
-    // Vector CRM fix if workload is missing or stage/ARR is misaligned:
     {
       "type": "fix_vector",
       "title": "Fix Vector: Create Workload for [Opp Name]",
@@ -309,7 +389,6 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
         "nextSteps": "Authoritative next step under 255 chars"
       }
     },
-    // High-priority task if action is required today:
     {
       "type": "add_task",
       "title": "Task: [Actionable Verb Phrase]",
@@ -321,7 +400,6 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
         "reason": "Prevents blocker from slipping"
       }
     },
-    // Authoritative next step if direction needs updating:
     {
       "type": "update_next_step",
       "title": "Update ## Next Step on Entity Page",
@@ -347,7 +425,7 @@ Return ONLY raw valid JSON, no markdown codeblocks, no commentary.`;
       contents: [{ parts: [{ text: `${systemInstruction}\n\nGROUND TRUTH CONTEXT:\n${context}` }] }],
       generationConfig: {
         temperature: 0.1,
-        maxOutputTokens: 8192,
+        maxOutputTokens: 16384,
         thinkingConfig: {
           thinkingBudget: 2048,
         },
@@ -626,7 +704,7 @@ export function buildPortfolioContext(
   );
   if (allOpenTasks.length) {
     parts.push(`\n## Open tasks across portfolio (${allOpenTasks.length} total)`);
-    for (const { entity, type, task: t } of allOpenTasks.slice(0, 80)) {
+    for (const { entity, type, task: t } of allOpenTasks.slice(0, 200)) {
       const bits = [t.due ? `due ${t.due}` : '', isOverdue(t, today) ? 'OVERDUE' : '', t.priority ? `p${t.priority}` : '']
         .filter(Boolean).join(', ');
       parts.push(`- [ ] [entity="${type}/${entity}" path="${t.path}" line=${t.line}] ${t.text}${bits ? ` (${bits})` : ''} — noted ${t.noteDate}`);

@@ -718,13 +718,13 @@ export class RolodexView extends ItemView {
         }
 
         // F. Reconcile / Close Tasks Proposal
-        else if (p.type === 'reconcile_tasks' && p.taskUpdates?.length) {
-          const updates = p.taskUpdates;
+        else if (p.type === 'reconcile_tasks' && (p.taskUpdates?.length || p.keptOpenTasks?.length)) {
+          const updates: TaskUpdateProposal[] = [...(p.taskUpdates || [])];
+          const keptOpen = [...(p.keptOpenTasks || [])];
+          let activeFilter: 'all' | 'done' | 'cancelled' = 'all';
+
           const topBar = pBody.createDiv({ cls: 'cockpit-reconcile-toolbar' });
-          topBar.createSpan({
-            text: `${updates.length} task(s) proposed for closure based on note context`,
-            cls: 'rolodex-muted',
-          });
+          const filterTabs = topBar.createDiv({ cls: 'cockpit-reconcile-filters' });
 
           const toggleWrap = topBar.createDiv({ cls: 'cockpit-reconcile-toggles' });
           const selectAllBtn = toggleWrap.createEl('button', {
@@ -737,8 +737,7 @@ export class RolodexView extends ItemView {
           });
 
           const list = pBody.createEl('ul', { cls: 'rolodex-proposal-list cockpit-reconcile-list' });
-          const checkboxes: HTMLInputElement[] = [];
-          const checkedStates = updates.map(() => true);
+          const checkedStates: boolean[] = updates.map(() => true);
 
           const bRow = pCard.createDiv({ cls: 'rolodex-row' });
           const applyBtn = bRow.createEl('button', {
@@ -746,74 +745,168 @@ export class RolodexView extends ItemView {
             cls: 'rolodex-chip is-cta',
           });
 
+          const renderFilterButtons = () => {
+            filterTabs.empty();
+            const doneCount = updates.filter(u => u.newStatus === 'done').length;
+            const cancelCount = updates.filter(u => u.newStatus === 'cancelled').length;
+
+            const mkTab = (label: string, mode: 'all' | 'done' | 'cancelled') => {
+              const btn = filterTabs.createEl('button', {
+                text: label,
+                cls: activeFilter === mode ? 'rolodex-chip is-mini is-on' : 'rolodex-chip is-mini',
+              });
+              btn.addEventListener('click', () => {
+                activeFilter = mode;
+                renderFilterButtons();
+                renderListItems();
+              });
+            };
+
+            mkTab(`All Closures (${updates.length})`, 'all');
+            if (doneCount > 0) mkTab(`✓ Done (${doneCount})`, 'done');
+            if (cancelCount > 0) mkTab(`✗ Cancel (${cancelCount})`, 'cancelled');
+          };
+
           const syncCount = () => {
             const count = checkedStates.filter(Boolean).length;
             applyBtn.setText(`⚡ Apply Selected Closures (${count})`);
             applyBtn.disabled = count === 0;
           };
 
-          selectAllBtn.addEventListener('click', () => {
-            checkboxes.forEach((cb, idx) => {
-              cb.checked = true;
-              checkedStates[idx] = true;
+          const renderListItems = () => {
+            list.empty();
+            updates.forEach((u, i) => {
+              if (activeFilter !== 'all' && u.newStatus !== activeFilter) return;
+
+              const item = list.createEl('li', { cls: 'rolodex-proposal-item cockpit-reconcile-item' });
+              const mainLine = item.createDiv({ cls: 'cockpit-reconcile-main' });
+
+              const cb = mainLine.createEl('input', { type: 'checkbox' });
+              cb.checked = checkedStates[i];
+              cb.addEventListener('change', () => {
+                checkedStates[i] = cb.checked;
+                syncCount();
+              });
+
+              const badge = mainLine.createSpan({
+                text: u.newStatus === 'done' ? '✓ DONE' : '✗ CANCEL',
+                cls: u.newStatus === 'done' ? 'rolodex-badge is-done cockpit-clickable-badge' : 'rolodex-badge is-cancel cockpit-clickable-badge',
+                attr: { title: 'Click to toggle between ✓ DONE and ✗ CANCEL' },
+              });
+              badge.addEventListener('click', () => {
+                u.newStatus = u.newStatus === 'done' ? 'cancelled' : 'done';
+                renderFilterButtons();
+                renderListItems();
+              });
+
+              if (u.entityName) {
+                mainLine.createSpan({
+                  text: u.entityName,
+                  cls: 'rolodex-chip is-mini cockpit-reconcile-entity-chip',
+                });
+              }
+
+              mainLine.createSpan({ text: ` ${u.currentText}`, cls: 'rolodex-task-text' });
+
+              if (u.path) {
+                const fileLabel = u.path.split('/').pop() || u.path;
+                const srcLink = mainLine.createEl('a', {
+                  text: `📄 ${fileLabel}${typeof u.line === 'number' ? `:${u.line + 1}` : ''}`,
+                  cls: 'cockpit-task-source-chip',
+                  attr: { title: `Open source note: ${u.path}` },
+                });
+                srcLink.addEventListener('click', (ev) => {
+                  ev.preventDefault();
+                  void this.app.workspace.openLinkText(u.path, '', false);
+                });
+              }
+
+              if (u.reason) {
+                item.createDiv({
+                  text: `💬 Why close: ${u.reason}`,
+                  cls: 'cockpit-reconcile-evidence',
+                });
+              }
             });
+          };
+
+          selectAllBtn.addEventListener('click', () => {
+            updates.forEach((u, idx) => {
+              if (activeFilter === 'all' || u.newStatus === activeFilter) {
+                checkedStates[idx] = true;
+              }
+            });
+            renderListItems();
             syncCount();
           });
 
           deselectAllBtn.addEventListener('click', () => {
-            checkboxes.forEach((cb, idx) => {
-              cb.checked = false;
-              checkedStates[idx] = false;
+            updates.forEach((u, idx) => {
+              if (activeFilter === 'all' || u.newStatus === activeFilter) {
+                checkedStates[idx] = false;
+              }
             });
+            renderListItems();
             syncCount();
           });
 
-          updates.forEach((u, i) => {
-            const item = list.createEl('li', { cls: 'rolodex-proposal-item cockpit-reconcile-item' });
-            const mainLine = item.createDiv({ cls: 'cockpit-reconcile-main' });
+          renderFilterButtons();
+          renderListItems();
+          syncCount();
 
-            const cb = mainLine.createEl('input', { type: 'checkbox' });
-            cb.checked = true;
-            checkboxes.push(cb);
-            cb.addEventListener('change', () => {
-              checkedStates[i] = cb.checked;
-              syncCount();
+          // Collapsible Kept Open / Verified Active section so user sees 100% of tasks in 1 pass
+          let keptDetails: HTMLDetailsElement | null = null;
+          const renderKeptSection = () => {
+            if (keptDetails) keptDetails.remove();
+            if (!keptOpen.length) return;
+
+            keptDetails = pBody.createEl('details', { cls: 'cockpit-kept-open-details' });
+            const summary = keptDetails.createEl('summary', { cls: 'cockpit-kept-open-summary' });
+            summary.setText(`🛡️ Verified Still Active (${keptOpen.length} task${keptOpen.length === 1 ? '' : 's'} kept open) — click to inspect or override`);
+
+            const keptList = keptDetails.createEl('ul', { cls: 'rolodex-proposal-list cockpit-reconcile-list' });
+            keptOpen.forEach((k, kIdx) => {
+              const kItem = keptList.createEl('li', { cls: 'rolodex-proposal-item cockpit-reconcile-item is-kept-open' });
+              const kMain = kItem.createDiv({ cls: 'cockpit-reconcile-main' });
+
+              kMain.createSpan({ text: '🛡️ KEEP OPEN', cls: 'rolodex-badge is-neutral' });
+              if (k.entityName) {
+                kMain.createSpan({ text: k.entityName, cls: 'rolodex-chip is-mini cockpit-reconcile-entity-chip' });
+              }
+              kMain.createSpan({ text: ` ${k.currentText}`, cls: 'rolodex-task-text' });
+
+              const promoteBtn = kMain.createEl('button', {
+                text: '+ Close Anyway ✗',
+                cls: 'rolodex-chip is-mini cockpit-promote-close-btn',
+                attr: { title: 'Move this task into the closure list above' },
+              });
+              promoteBtn.addEventListener('click', () => {
+                const moved = keptOpen.splice(kIdx, 1)[0];
+                updates.push({
+                  path: moved.path,
+                  line: moved.line,
+                  currentText: moved.currentText,
+                  newStatus: 'cancelled',
+                  reason: `Overridden by user (was: ${moved.reason})`,
+                  entityName: moved.entityName,
+                });
+                checkedStates.push(true);
+                renderFilterButtons();
+                renderListItems();
+                syncCount();
+                renderKeptSection();
+              });
+
+              if (k.reason) {
+                kItem.createDiv({
+                  text: `📌 Why keep active: ${k.reason}`,
+                  cls: 'cockpit-reconcile-evidence',
+                });
+              }
             });
+          };
 
-            mainLine.createSpan({
-              text: u.newStatus === 'done' ? '✓ DONE' : '✗ CANCEL',
-              cls: u.newStatus === 'done' ? 'rolodex-badge is-done' : 'rolodex-badge is-cancel',
-            });
-
-            if (u.entityName) {
-              mainLine.createSpan({
-                text: u.entityName,
-                cls: 'rolodex-chip is-mini cockpit-reconcile-entity-chip',
-              });
-            }
-
-            mainLine.createSpan({ text: ` ${u.currentText}`, cls: 'rolodex-task-text' });
-
-            if (u.path) {
-              const fileLabel = u.path.split('/').pop() || u.path;
-              const srcLink = mainLine.createEl('a', {
-                text: `📄 ${fileLabel}${typeof u.line === 'number' ? `:${u.line + 1}` : ''}`,
-                cls: 'cockpit-task-source-chip',
-                attr: { title: `Open source note: ${u.path}` },
-              });
-              srcLink.addEventListener('click', (ev) => {
-                ev.preventDefault();
-                void this.app.workspace.openLinkText(u.path, '', false);
-              });
-            }
-
-            if (u.reason) {
-              item.createDiv({
-                text: `📌 Context Evidence: ${u.reason}`,
-                cls: 'cockpit-reconcile-evidence',
-              });
-            }
-          });
+          renderKeptSection();
 
           applyBtn.addEventListener('click', async () => {
             applyBtn.disabled = true;

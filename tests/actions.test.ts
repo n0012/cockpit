@@ -160,6 +160,13 @@ describe('Task reconciliation context & applyTaskUpdates', () => {
     expect(ctx).toContain('[path="Customers/Acme.md" line=14] Finalize production sizing proposal');
   });
 
+  it('detects reconciliation and cleanup queries accurately via isReconciliationQuery', async () => {
+    const { isReconciliationQuery } = await import('../src/ai');
+    expect(isReconciliationQuery('many of these open tasks need reconciliation if still needed. review context from notes, and help me propose which tasks to close')).toBe(true);
+    expect(isReconciliationQuery('clean up stale tasks for Amgen')).toBe(true);
+    expect(isReconciliationQuery('What is the latest status on FoldRun?')).toBe(false);
+  });
+
   it('applies done and cancelled task updates even when inline tags were stripped from currentText', async () => {
     const { applyTaskUpdates } = await import('../src/actions');
     const { TFile } = await import('obsidian');

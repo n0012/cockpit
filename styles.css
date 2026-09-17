@@ -1758,4 +1758,51 @@
   line-height: 1.35;
 }
 
+.cockpit-reconcile-filters {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+}
+
+.cockpit-clickable-badge {
+  cursor: pointer;
+  user-select: none;
+  transition: transform 0.1s ease, opacity 0.1s ease;
+}
+
+.cockpit-clickable-badge:hover {
+  transform: scale(1.04);
+  opacity: 0.9;
+}
+
+.cockpit-kept-open-details {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--background-modifier-border);
+}
+
+.cockpit-kept-open-summary {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+}
+
+.cockpit-kept-open-summary:hover {
+  color: var(--text-normal);
+}
+
+.cockpit-promote-close-btn {
+  margin-left: auto;
+  color: var(--text-error);
+  border-color: var(--background-modifier-border);
+}
+
+.cockpit-promote-close-btn:hover {
+  background: var(--background-modifier-error);
+  color: var(--text-on-accent);
+}
+
+
 

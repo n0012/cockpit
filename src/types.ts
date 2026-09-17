@@ -400,6 +400,13 @@ export interface ChiefOfStaffActionProposal {
     rationale?: string;
   };
   taskUpdates?: TaskUpdateProposal[];
+  keptOpenTasks?: Array<{
+    path: string;
+    line: number;
+    currentText: string;
+    reason: string;
+    entityName?: string;
+  }>;
 }
 
 export interface ChiefOfStaffResult {
