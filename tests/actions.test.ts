@@ -128,3 +128,88 @@ describe('Chief of Staff action URL builders', () => {
     expect(url).toContain('details=1.%20Quota%0A2.%20Sizing');
   });
 });
+
+describe('Task reconciliation context & applyTaskUpdates', () => {
+  it('includes [path="..." line=...] metadata in buildContext for open tasks', async () => {
+    const { buildContext } = await import('../src/ai');
+    const entity: EntityRecord = {
+      key: 'customer/acme',
+      type: 'Customer',
+      name: 'Acme',
+      subs: new Set(),
+      tasks: [
+        {
+          text: 'Finalize production sizing proposal',
+          raw: '- [ ] Finalize production sizing proposal #Customer/Acme 📅 2026-09-12',
+          status: 'open',
+          path: 'Customers/Acme.md',
+          line: 14,
+          noteDate: '2026-09-01',
+          heading: 'Tasks',
+          due: '2026-09-12',
+        },
+      ],
+      activities: [],
+      related: new Map(),
+      noteCount: 1,
+      lastSeen: '2026-09-15',
+      firstSeen: '2026-09-01',
+    };
+
+    const ctx = buildContext(entity, { from: '2026-08-15', to: '2026-09-17' }, new Map());
+    expect(ctx).toContain('[path="Customers/Acme.md" line=14] Finalize production sizing proposal');
+  });
+
+  it('applies done and cancelled task updates even when inline tags were stripped from currentText', async () => {
+    const { applyTaskUpdates } = await import('../src/actions');
+    const { TFile } = await import('obsidian');
+
+    let fileContent = [
+      '# Acme Meeting',
+      '- [ ] Follow up with #Customer/Acme on FoldRun quota 📅 2026-09-10 🔺',
+      '- [ ] Old deprecated POC task #Customer/Acme',
+    ].join('\n');
+
+    const fakeFile = Object.create(TFile.prototype);
+    fakeFile.path = 'Customers/Acme.md';
+
+    const mockApp: any = {
+      vault: {
+        getAbstractFileByPath: (p: string) => (p === 'Customers/Acme.md' ? fakeFile : null),
+        process: async (_file: any, fn: (data: string) => string) => {
+          fileContent = fn(fileContent);
+        },
+        adapter: {
+          exists: async () => true,
+          mkdir: async () => {},
+          write: async () => {},
+        },
+      },
+    };
+
+    const updatedCount = await applyTaskUpdates(mockApp, [
+      {
+        path: 'Customers/Acme.md',
+        line: 1,
+        currentText: 'Follow up with on FoldRun quota', // stripped of #Customer/Acme
+        newStatus: 'done',
+        reason: 'Quota approved in 2026-09-14 sync note',
+        entityName: 'Acme',
+      },
+      {
+        path: 'Customers/Acme.md',
+        line: 99, // shifted line number
+        currentText: 'Old deprecated POC task',
+        newStatus: 'cancelled',
+        reason: 'Superseded by production deployment',
+        entityName: 'Acme',
+      },
+    ]);
+
+    expect(updatedCount).toBe(2);
+    const lines = fileContent.split('\n');
+    expect(lines[1]).toMatch(/^- \[x\] Follow up with #Customer\/Acme on FoldRun quota .* ✅ \d{4}-\d{2}-\d{2}$/);
+    expect(lines[2]).toMatch(/^- \[-\] Old deprecated POC task #Customer\/Acme ❌ \d{4}-\d{2}-\d{2}$/);
+  });
+});
+

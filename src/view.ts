@@ -226,6 +226,7 @@ export class RolodexView extends ItemView {
     const chipsRow = actionWrap.createDiv({ cls: 'rolodex-chips rolodex-quick-prompts' });
     const quickPrompts = [
       { label: '👔 Chief of Staff Brief', query: 'Provide a full situation briefing, diagnostic review, and recommended interventions.' },
+      { label: '🧹 Reconcile Tasks', query: 'Many of these open tasks need reconciliation if still needed. Review context from recent notes, completed items, and next steps, and propose which tasks to close (mark done or cancel) with specific evidence from notes.' },
       { label: '🚨 Unblock & Fix Vector', query: 'Identify active blockers in CaseChat and missing Vector CRM workloads, then propose fixes.' },
       { label: '✉️ Draft Follow-up', query: 'Draft an executive follow-up email to unblock pending commitments.' },
       { label: '📅 Schedule Sync', query: 'Propose a working session invite and agenda for key stakeholders.' },
@@ -713,6 +714,116 @@ export class RolodexView extends ItemView {
               commitBtn.disabled = false;
               commitBtn.setText('⚠️ Failed to update');
             }
+          });
+        }
+
+        // F. Reconcile / Close Tasks Proposal
+        else if (p.type === 'reconcile_tasks' && p.taskUpdates?.length) {
+          const updates = p.taskUpdates;
+          const topBar = pBody.createDiv({ cls: 'cockpit-reconcile-toolbar' });
+          topBar.createSpan({
+            text: `${updates.length} task(s) proposed for closure based on note context`,
+            cls: 'rolodex-muted',
+          });
+
+          const toggleWrap = topBar.createDiv({ cls: 'cockpit-reconcile-toggles' });
+          const selectAllBtn = toggleWrap.createEl('button', {
+            text: 'Select All',
+            cls: 'rolodex-chip is-mini',
+          });
+          const deselectAllBtn = toggleWrap.createEl('button', {
+            text: 'Deselect All',
+            cls: 'rolodex-chip is-mini',
+          });
+
+          const list = pBody.createEl('ul', { cls: 'rolodex-proposal-list cockpit-reconcile-list' });
+          const checkboxes: HTMLInputElement[] = [];
+          const checkedStates = updates.map(() => true);
+
+          const bRow = pCard.createDiv({ cls: 'rolodex-row' });
+          const applyBtn = bRow.createEl('button', {
+            text: `⚡ Apply Selected Closures (${updates.length})`,
+            cls: 'rolodex-chip is-cta',
+          });
+
+          const syncCount = () => {
+            const count = checkedStates.filter(Boolean).length;
+            applyBtn.setText(`⚡ Apply Selected Closures (${count})`);
+            applyBtn.disabled = count === 0;
+          };
+
+          selectAllBtn.addEventListener('click', () => {
+            checkboxes.forEach((cb, idx) => {
+              cb.checked = true;
+              checkedStates[idx] = true;
+            });
+            syncCount();
+          });
+
+          deselectAllBtn.addEventListener('click', () => {
+            checkboxes.forEach((cb, idx) => {
+              cb.checked = false;
+              checkedStates[idx] = false;
+            });
+            syncCount();
+          });
+
+          updates.forEach((u, i) => {
+            const item = list.createEl('li', { cls: 'rolodex-proposal-item cockpit-reconcile-item' });
+            const mainLine = item.createDiv({ cls: 'cockpit-reconcile-main' });
+
+            const cb = mainLine.createEl('input', { type: 'checkbox' });
+            cb.checked = true;
+            checkboxes.push(cb);
+            cb.addEventListener('change', () => {
+              checkedStates[i] = cb.checked;
+              syncCount();
+            });
+
+            mainLine.createSpan({
+              text: u.newStatus === 'done' ? '✓ DONE' : '✗ CANCEL',
+              cls: u.newStatus === 'done' ? 'rolodex-badge is-done' : 'rolodex-badge is-cancel',
+            });
+
+            if (u.entityName) {
+              mainLine.createSpan({
+                text: u.entityName,
+                cls: 'rolodex-chip is-mini cockpit-reconcile-entity-chip',
+              });
+            }
+
+            mainLine.createSpan({ text: ` ${u.currentText}`, cls: 'rolodex-task-text' });
+
+            if (u.path) {
+              const fileLabel = u.path.split('/').pop() || u.path;
+              const srcLink = mainLine.createEl('a', {
+                text: `📄 ${fileLabel}${typeof u.line === 'number' ? `:${u.line + 1}` : ''}`,
+                cls: 'cockpit-task-source-chip',
+                attr: { title: `Open source note: ${u.path}` },
+              });
+              srcLink.addEventListener('click', (ev) => {
+                ev.preventDefault();
+                void this.app.workspace.openLinkText(u.path, '', false);
+              });
+            }
+
+            if (u.reason) {
+              item.createDiv({
+                text: `📌 Context Evidence: ${u.reason}`,
+                cls: 'cockpit-reconcile-evidence',
+              });
+            }
+          });
+
+          applyBtn.addEventListener('click', async () => {
+            applyBtn.disabled = true;
+            applyBtn.setText('⏳ Reconciling tasks…');
+            const selectedUpdates = updates.filter((_, i) => checkedStates[i]);
+            const count = await applyTaskUpdates(this.app, selectedUpdates);
+            applyBtn.setText(`✅ Closed ${count} Task(s)`);
+            new Notice(`Reconciled and closed ${count} task(s) across the vault!`);
+            await this.plugin.rescan();
+            this.render();
           });
         }
       }
@@ -1403,6 +1514,11 @@ export class RolodexView extends ItemView {
       .onClick(() => this.triggerChiefOfStaffBrief(e));
 
     new ButtonComponent(row)
+      .setButtonText('🧹 Reconcile Tasks')
+      .setTooltip('Cross-reference open tasks against recent meeting notes and propose closures with evidence')
+      .onClick(() => this.triggerTaskReconciliation(e));
+
+    new ButtonComponent(row)
       .setButtonText('🧠 Executive Brief')
       .onClick(() => this.triggerBriefing());
 
@@ -1454,6 +1570,44 @@ export class RolodexView extends ItemView {
       const card = host.createDiv({ cls: 'rolodex-proposal-card' });
       const head = card.createDiv({ cls: 'rolodex-proposal-head' });
       head.createSpan({ text: `👔 Chief of Staff Dispatch: ${e.name}`, cls: 'rolodex-proposal-title' });
+      const closeBtn = head.createEl('button', { text: '✕', cls: 'rolodex-chip is-mini' });
+      closeBtn.addEventListener('click', () => host.empty());
+      this.renderChiefOfStaffDispatch(card, res, () => host.empty());
+    } catch (err: any) {
+      host.empty();
+      host.createDiv({
+        text: `⚠️ Error: ${err.message || String(err)}`,
+        cls: 'rolodex-error',
+      });
+    }
+  }
+
+  private async triggerTaskReconciliation(e: EntityRecord) {
+    if (!this.plugin.settings.geminiApiKey) {
+      new Notice('Add a Gemini API key in Cockpit settings first');
+      return;
+    }
+
+    const host = this.body().querySelector('.rolodex-summary') as HTMLElement | null;
+    if (!host) return;
+    host.empty();
+    host.scrollIntoView({ behavior: 'smooth', block: 'nearest' });
+    host.createDiv({ text: `🧹 Chief of Staff reconciling open tasks against recent notes for ${e.name}…`, cls: 'rolodex-muted' });
+
+    try {
+      const res = await askChiefOfStaff(
+        this.app,
+        this.plugin.settings.geminiApiKey,
+        this.plugin.settings.geminiModel,
+        `Many of these open tasks need reconciliation if still needed. Review context from recent notes, completed items, and next steps for ${e.type}/${e.name}, and propose which open tasks to close (mark done or cancel) with specific note evidence in a reconcile_tasks proposal.`,
+        e,
+        this.plugin.index ? this.plugin.index.entities : new Map(),
+        this.win,
+      );
+      host.empty();
+      const card = host.createDiv({ cls: 'rolodex-proposal-card' });
+      const head = card.createDiv({ cls: 'rolodex-proposal-head' });
+      head.createSpan({ text: `🧹 Task Reconciliation: ${e.name}`, cls: 'rolodex-proposal-title' });
       const closeBtn = head.createEl('button', { text: '✕', cls: 'rolodex-chip is-mini' });
       closeBtn.addEventListener('click', () => host.empty());
       this.renderChiefOfStaffDispatch(card, res, () => host.empty());
@@ -1825,7 +1979,17 @@ export class RolodexView extends ItemView {
     if (!open.length) return;
 
     const sec = root.createDiv({ cls: 'rolodex-section' });
-    sec.createEl('h4', { text: `Open Tasks (${open.length})` });
+    const headerRow = sec.createDiv({ cls: 'rolodex-section-header-row' });
+    headerRow.createEl('h4', { text: `Open Tasks (${open.length})` });
+
+    const reconcileBtn = headerRow.createEl('button', {
+      text: '🧹 Reconcile with Notes',
+      cls: 'rolodex-chip is-mini',
+      attr: { title: 'Cross-reference open tasks against recent meeting notes and propose closures with evidence' },
+    });
+    reconcileBtn.addEventListener('click', () => {
+      void this.triggerTaskReconciliation(e);
+    });
 
     const list = sec.createEl('ul', { cls: 'rolodex-tasks' });
     for (const t of open) {

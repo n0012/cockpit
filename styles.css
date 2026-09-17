@@ -1682,3 +1682,80 @@
   outline: none;
 }
 
+/* Task Reconciliation & Closure Proposal Styles */
+.cockpit-action-card.is-reconcile_tasks {
+  border-left: 3px solid var(--color-green, #22c55e);
+}
+
+.cockpit-reconcile-toolbar {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding-bottom: 6px;
+  border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.cockpit-reconcile-toggles {
+  display: flex;
+  gap: 4px;
+}
+
+.cockpit-reconcile-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin: 8px 0;
+  padding-left: 0;
+  list-style: none;
+}
+
+.cockpit-reconcile-item {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  padding: 7px 10px;
+  background: var(--background-primary);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: 6px;
+}
+
+.cockpit-reconcile-main {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.cockpit-reconcile-entity-chip {
+  font-weight: 600;
+  color: var(--text-accent);
+}
+
+.cockpit-task-source-chip {
+  margin-left: auto;
+  font-size: 11px;
+  color: var(--text-muted);
+  text-decoration: none;
+  padding: 1px 6px;
+  border-radius: 4px;
+  background: var(--background-secondary);
+  border: 1px solid var(--background-modifier-border);
+  cursor: pointer;
+}
+
+.cockpit-task-source-chip:hover {
+  color: var(--text-accent);
+  border-color: var(--interactive-accent);
+}
+
+.cockpit-reconcile-evidence {
+  font-size: 11.5px;
+  color: var(--text-muted);
+  padding-left: 24px;
+  line-height: 1.35;
+}
+
+

@@ -6,6 +6,7 @@
  */
 
 import { App, TFile } from 'obsidian';
+import { parseTaskLine, parseTaskMeta } from './parse';
 
 export interface TagReclassifyResult {
   path: string;
@@ -18,6 +19,7 @@ export interface TaskUpdateProposal {
   currentText: string;
   newStatus: 'done' | 'cancelled' | 'open';
   reason?: string;
+  entityName?: string;
 }
 
 /**
@@ -71,6 +73,17 @@ export async function reclassifyTagInVault(
   return results;
 }
 
+function lineMatchesTaskText(line: string, targetText: string): boolean {
+  if (!targetText) return true;
+  if (line.includes(targetText)) return true;
+  const parsed = parseTaskLine(line);
+  if (!parsed) return false;
+  const { text } = parseTaskMeta(parsed.body);
+  const normLine = text.toLowerCase().trim();
+  const normTarget = targetText.toLowerCase().trim();
+  return normLine === normTarget || normLine.includes(normTarget) || normTarget.includes(normLine);
+}
+
 /**
  * Applies a list of task updates (done, cancelled, open) to their respective files.
  */
@@ -100,8 +113,8 @@ export async function applyTaskUpdates(
           // Verify line contains expected text or search for it if line numbers shifted
           if (u.currentText) {
             const currentAtOffset = (lineIdx >= 0 && lineIdx < lines.length) ? lines[lineIdx] : '';
-            if (!currentAtOffset.includes(u.currentText)) {
-              const found = lines.findIndex(l => l.includes(u.currentText));
+            if (!lineMatchesTaskText(currentAtOffset, u.currentText)) {
+              const found = lines.findIndex(l => lineMatchesTaskText(l, u.currentText));
               if (found >= 0) lineIdx = found;
             }
           }
@@ -130,6 +143,18 @@ export async function applyTaskUpdates(
         }
         return lines.join('\n');
       });
+
+      for (const u of fileUpdates) {
+        const statusLabel = u.newStatus === 'done' ? 'Task Completed (✅)' : 'Task Cancelled (❌)';
+        const reasonSuffix = u.reason ? ` — ${u.reason}` : '';
+        void logCockpitAction(
+          app,
+          u.entityName || path.split('/').pop()?.replace(/\.md$/, '') || 'General',
+          statusLabel,
+          `${u.currentText}${reasonSuffix}`,
+          path,
+        );
+      }
     } catch (err) {
       console.error(`Cockpit: Error updating tasks in ${path}:`, err);
     }

@@ -360,10 +360,11 @@ export interface TaskUpdateProposal {
   currentText: string;
   newStatus: 'done' | 'cancelled' | 'open';
   reason?: string;
+  entityName?: string;
 }
 
 export interface ChiefOfStaffActionProposal {
-  type: 'email_draft' | 'schedule_meeting' | 'fix_vector' | 'add_task' | 'update_next_step' | 'save_answer';
+  type: 'email_draft' | 'schedule_meeting' | 'fix_vector' | 'add_task' | 'update_next_step' | 'save_answer' | 'reconcile_tasks';
   title: string;
   description: string;
   email?: {
@@ -398,6 +399,7 @@ export interface ChiefOfStaffActionProposal {
     text: string;
     rationale?: string;
   };
+  taskUpdates?: TaskUpdateProposal[];
 }
 
 export interface ChiefOfStaffResult {

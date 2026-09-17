@@ -218,7 +218,7 @@ export async function askChiefOfStaff(
   const entityScope = currentEntity ? `${currentEntity.type} / ${currentEntity.name}` : 'Entire Portfolio';
 
   const systemInstruction = `You are the Executive Chief of Staff to a Principal Google Cloud Healthcare & Life Sciences (HCLS) Customer Engineer.
-Your mandate is high-agency strategic partnership: diagnose account health, uncover friction points and blockers, and prepare turnkey execution artifacts (emails, meeting invites, Vector CRM fixes, prioritized tasks, next steps).
+Your mandate is high-agency strategic partnership: diagnose account health, uncover friction points and blockers, reconcile open tasks against note context, and prepare turnkey execution artifacts (task closures, emails, meeting invites, Vector CRM fixes, prioritized tasks, next steps).
 
 Current Scope: ${entityScope}
 Today's Date: ${today}
@@ -227,28 +227,49 @@ User Query / Directive: "${query}"
 
 CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
 1. Rely EXCLUSIVELY and STRICTLY on the facts, stakeholders, support tickets, and telemetry in the GROUND TRUTH CONTEXT. Do NOT invent fictional companies or cases.
-2. TASK AWARENESS & DEDUPLICATION:
-   - Carefully review all items under "## Open tasks" and "## Completed in the window" before suggesting actions.
-   - NEVER propose a new task that duplicates, restates, or overlaps an existing open task.
-   - If an existing task is overdue, slipping, or blocked (e.g., #waiting), prioritize proposing concrete interventions (an email draft, meeting invite, or Vector CRM fix) to UNBLOCK that commitment rather than logging duplicate tasks.
-   - Any new task proposed must be a distinct, high-leverage forward step not already captured on file.
-3. Produce a rigorous, structured response matching this JSON schema:
+2. TASK RECONCILIATION & CLOSURE (HIGH PRIORITY):
+   - Carefully cross-reference all items under "## Open tasks" against "## Completed in the window", "## Notes, newest first", "## Authoritative Next Step", and support/CRM telemetry.
+   - Whenever the user asks to reconcile, review, clean up, audit, or propose which open tasks to close (or whenever open tasks in context have clearly been delivered, completed, superseded, or rendered obsolete by subsequent notes), you MUST include a "reconcile_tasks" proposal in "actionProposals".
+   - For each open task that should be closed:
+     * Set "newStatus" to "done" (✅) if recent notes, meeting summaries, or completions confirm the commitment/deliverable was completed, sent, answered, or resolved.
+     * Set "newStatus" to "cancelled" (❌) if the task was superseded by a newer architectural decision or Next Step, abandoned, duplicate of another task, or stale (>30 days old with zero mention in recent notes and no active blocker).
+     * Provide a specific, grounded "reason" citing the exact note date, heading, or rationale from the context.
+     * Copy the exact "path" and "line" number from the [path="..." line=...] tag on that open task line, and set "currentText" to the task text.
+3. TASK AWARENESS & DEDUPLICATION:
+   - NEVER propose a new task ("add_task") that duplicates, restates, or overlaps an existing open task.
+   - If an existing task is genuinely still active and overdue/blocked (e.g., #waiting), prioritize proposing concrete interventions (an email draft, meeting invite, or Vector CRM fix) to UNBLOCK that commitment.
+4. Produce a rigorous, structured response matching this JSON schema:
 
 {
-  "situationBrief": "Grounded executive briefing (2-3 paragraphs) directly answering the query or synthesizing current posture. Cite notes, dates (e.g. [[${today}]]), customer stakeholders, and cases.",
+  "situationBrief": "Grounded executive briefing (2-3 paragraphs) directly answering the query or synthesizing current posture and task reconciliation findings. Cite notes, dates (e.g. [[${today}]]), customer stakeholders, and cases.",
   "diagnosticReview": {
     "healthStatus": "healthy" | "caution" | "critical" | "neutral",
     "headline": "Punchy 1-sentence diagnostic verdict",
     "findings": [
-      "Key diagnostic finding (e.g. P1 blocker on FoldRun quota unassigned in CaseChat)",
+      "Key diagnostic or task reconciliation finding (e.g. 4 open tasks resolved in recent sync notes and ready to close)",
       "Key commercial/technical finding (e.g. $250K Vector Opp missing workload)"
     ],
     "blindSpots": [
-      "Critical gaps, missing touchpoints, unreplied asks, or overdue commitments"
+      "Critical gaps, missing touchpoints, unreplied asks, or unclosed commitments"
     ]
   },
   "actionProposals": [
-    // Include 2 to 5 actionable proposals that solve problems uncovered above:
+    // Task Reconciliation Proposal (include whenever open tasks should be marked done or cancelled based on note context):
+    {
+      "type": "reconcile_tasks",
+      "title": "Reconcile Open Tasks: Propose Closures",
+      "description": "Evidence-backed task closures cross-referenced against recent meeting notes and deliverables",
+      "taskUpdates": [
+        {
+          "path": "Customers/Acme.md",
+          "line": 42,
+          "currentText": "Finalize production sizing proposal",
+          "newStatus": "done",
+          "reason": "Confirmed delivered in 2026-09-12 architecture sync note",
+          "entityName": "Acme"
+        }
+      ]
+    },
     // Email draft if outreach, reply, or status update is needed:
     {
       "type": "email_draft",
@@ -295,7 +316,7 @@ CRITICAL GROUND-TRUTH & ACTIONABILITY RULES:
       "description": "Why this must be captured today",
       "task": {
         "text": "Verb phrase for task",
-        "priority": "🔺", // "🔺" for high/critical, "⏫" for medium, or empty
+        "priority": "🔺",
         "due": "YYYY-MM-DD",
         "reason": "Prevents blocker from slipping"
       }
@@ -375,7 +396,7 @@ export async function executeAiCommand(
   allEntities: Map<string, EntityRecord>,
   win?: Window,
 ): Promise<AiCommandResult> {
-  // Try instant deterministic parsing first
+  // Try instant deterministic parsing first (for tag reclassifications)
   const fast = tryDeterministicCommand(command, allEntities, currentEntity);
   if (fast) return fast;
 
@@ -385,39 +406,29 @@ export async function executeAiCommand(
 
   const defaultWin: Window = win || { from: daysAgoIso(30), to: todayIso() };
 
-  // If the command is a query, question, action request, review, or chief of staff task:
-  // Route to the comprehensive Chief of Staff engine!
-  const lower = command.toLowerCase();
-  const isSimpleTaskUpdate = /^(clean up|cancel|mark done|stale tasks)\b/i.test(lower);
-
-  if (!isSimpleTaskUpdate) {
-    try {
-      const chiefResult = await askChiefOfStaff(
-        app,
-        apiKey,
-        model,
-        command,
-        currentEntity,
-        allEntities,
-        defaultWin,
-      );
-      return {
-        type: 'chief_of_staff',
-        title: currentEntity ? `👔 Chief of Staff: ${currentEntity.name}` : '👔 Chief of Staff: Territory Review',
-        chiefOfStaff: chiefResult,
-      };
-    } catch (err: any) {
-      console.warn('Chief of Staff execution error, falling back to basic command parser:', err);
-    }
+  // Route queries, task reconciliations, cleanups, and briefings through the full Chief of Staff engine
+  // so it always has full note context, telemetry, and can produce evidence-backed proposals.
+  try {
+    const chiefResult = await askChiefOfStaff(
+      app,
+      apiKey,
+      model,
+      command,
+      currentEntity,
+      allEntities,
+      defaultWin,
+    );
+    return {
+      type: 'chief_of_staff',
+      title: currentEntity ? `👔 Chief of Staff: ${currentEntity.name}` : '👔 Chief of Staff: Territory Review',
+      chiefOfStaff: chiefResult,
+    };
+  } catch (err: any) {
+    console.warn('Chief of Staff execution error, falling back to basic command parser:', err);
   }
 
-  // Build context for AI execution fallback
-  const today = todayIso();
-  let contextBrief = `Today's Date: ${today}\n`;
-  if (currentEntity) {
-    contextBrief += `Active Entity: ${currentEntity.type}/${currentEntity.name}\n`;
-    contextBrief += `Open Tasks:\n${currentEntity.tasks.filter(t => t.status === 'open').map(t => `- [line ${t.line} in ${t.path}] ${t.text} (${t.due ? `due ${t.due}` : ''})`).join('\n')}\n`;
-  }
+  // Build rich context for AI execution fallback
+  const contextBrief = await buildChiefOfStaffContext(app, currentEntity, allEntities, defaultWin, 45_000);
 
   const systemInstruction = `You are the executive AI assistant inside Cockpit for a Google Cloud Customer Engineer.
 The user gave this command: "${command}"
@@ -550,7 +561,7 @@ export function buildContext(
     for (const t of open) {
       const bits = [t.due ? `due ${t.due}` : '', isOverdue(t, today) ? 'OVERDUE' : '', t.priority ? `p${t.priority}` : '']
         .filter(Boolean).join(', ');
-      parts.push(`- [ ] ${t.text}${bits ? ` (${bits})` : ''} — noted ${t.noteDate}`);
+      parts.push(`- [ ] [path="${t.path}" line=${t.line}] ${t.text}${bits ? ` (${bits})` : ''} — noted ${t.noteDate}`);
     }
   }
 
@@ -586,7 +597,7 @@ export function buildContext(
 
 /**
  * Builds rich portfolio context across all active entities in a time window
- * for Weekly and Monthly 2x2 synthesis.
+ * for Weekly and Monthly 2x2 synthesis and portfolio-wide task reconciliation.
  */
 export function buildPortfolioContext(
   w: Window,
@@ -604,6 +615,23 @@ export function buildPortfolioContext(
     .sort((a, b) => b.activities.length - a.activities.length);
 
   parts.push(`Total Active Accounts & Projects: ${activeEntities.length}`);
+
+  // All Open Tasks Across Portfolio (with path & line metadata for reconciliation)
+  const allOpenTasks = activeEntities.flatMap((e) =>
+    sortTasks(openTasks(e), today).map((t) => ({
+      entity: e.name,
+      type: e.type,
+      task: t,
+    }))
+  );
+  if (allOpenTasks.length) {
+    parts.push(`\n## Open tasks across portfolio (${allOpenTasks.length} total)`);
+    for (const { entity, type, task: t } of allOpenTasks.slice(0, 80)) {
+      const bits = [t.due ? `due ${t.due}` : '', isOverdue(t, today) ? 'OVERDUE' : '', t.priority ? `p${t.priority}` : '']
+        .filter(Boolean).join(', ');
+      parts.push(`- [ ] [entity="${type}/${entity}" path="${t.path}" line=${t.line}] ${t.text}${bits ? ` (${bits})` : ''} — noted ${t.noteDate}`);
+    }
+  }
 
   // Summary of completions across portfolio
   const allRecentlyDone = activeEntities.flatMap((e) =>
@@ -623,12 +651,12 @@ export function buildPortfolioContext(
   const openBlockers = activeEntities.flatMap((e) =>
     openTasks(e)
       .filter((t) => t.text.includes('#waiting') || isOverdue(t, today))
-      .map((t) => ({ entity: e.name, type: e.type, text: t.text, due: t.due }))
+      .map((t) => ({ entity: e.name, type: e.type, text: t.text, due: t.due, path: t.path, line: t.line }))
   );
   if (openBlockers.length) {
     parts.push(`\n## Active Blockers & Overdue Priorities (${openBlockers.length})`);
     for (const t of openBlockers.slice(0, 30)) {
-      parts.push(`- [ ] [${t.type}/${t.entity}] ${t.text}${t.due ? ` (due ${t.due})` : ''}`);
+      parts.push(`- [ ] [entity="${t.type}/${t.entity}" path="${t.path}" line=${t.line}] ${t.text}${t.due ? ` (due ${t.due})` : ''}`);
     }
   }
 
